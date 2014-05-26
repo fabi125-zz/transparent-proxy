@@ -3,9 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"regexp"
+	"flag"
 )
 
 type HttpProxyConnection struct {
@@ -40,12 +40,12 @@ func PipeConn(in net.Conn, out net.Conn) {
 	for {
 		numBytes, err := in.Read(buf)
 		if err != nil {
-			fmt.Printf("Read error: %v\n", err)
+			Logf(LOG_INFO, "Read error: %v\n", err)
 			break
 		}
 		_, err = out.Write(buf[:numBytes])
 		if err != nil {
-			fmt.Printf("Write error: %v\n", err)
+			Logf(LOG_INFO, "Write error: %v\n", err)
 			break
 		}
 	}
@@ -71,7 +71,7 @@ func (http *HttpProxyConnection) ParseHeader() error {
 		// Store new data in "buf"
 		copy(buf[pos:], tmpBuf[:numBytes])
 		pos += numBytes
-		//fmt.Printf("Current data:\n%v\n", string(buf[:pos]))
+		//Logf(LOG_DEBUG, "Current data:\n%v\n", string(buf[:pos]))
 
 		// Try to find the "Host: " header in "buf"
 		if matches := reHost.FindSubmatch(buf); len(matches) > 0 {
@@ -93,12 +93,12 @@ func (http *HttpProxyConnection) ParseHeader() error {
 }
 
 func (http *HttpProxyConnection) HandleConn() {
-	fmt.Printf("Handling new connection from %v\n", http.cConn.RemoteAddr())
+	Logf(LOG_NOTICE, "Handling new connection from %v\n", http.cConn.RemoteAddr())
 	var err error
 
 	// Extract desired server from HTTP header
 	if err = http.ParseHeader(); err != nil {
-		fmt.Printf("Error getting server: %v\n", err)
+		Logf(LOG_NOTICE, "Error getting server: %v\n", err)
 		http.cConn.Close()
 		return
 	}
@@ -106,25 +106,24 @@ func (http *HttpProxyConnection) HandleConn() {
 	// TODO(fabi): Figure out what to do if server contains a port number
 
 	// Create connection to server
-	fmt.Printf("Connecting to %s:http\n", http.server)
+	Logf(LOG_INFO, "Connecting to %s:http\n", http.server)
 	http.sConn, err = net.Dial("tcp", fmt.Sprintf("%s:http", http.server))
 	if err != nil {
-		fmt.Printf("Error connecting to server: %v\n", err)
+		Logf(LOG_NOTICE, "Error connecting to server: %v\n", err)
 		http.cConn.Close()
-		http.sConn.Close()
 		return
 	}
 
 	// Send data we read during parsing to server
 	if _, err = http.sConn.Write(http.headBuf); err != nil {
-		fmt.Printf("Write error: %v\n", err)
+		Logf(LOG_INFO, "Write error: %v\n", err)
 		http.cConn.Close()
 		http.sConn.Close()
 		return
 	}
 
 	// Link both connections together
-	fmt.Println("Linking client and server connection")
+	Logf(LOG_INFO, "Linking client and server connection")
 	go PipeConn(http.cConn, http.sConn)
 	go PipeConn(http.sConn, http.cConn)
 }
@@ -152,20 +151,20 @@ func (https *HttpsProxyConnection) ParseTlsHandshake() error {
 		}
 
 		// Check content type
-		//fmt.Printf("TLS content type: %d\n", buf[0])
+		//Logf(LOG_DEBUG, "TLS content type: %d\n", buf[0])
 		if buf[0] != 0x16 {
 			return errors.New("Data doesn't look like a TLS handshake!")
 		}
 
 		// We need at least SSL 3
-		//fmt.Printf("SSL version: %d.%d\n", buf[1], buf[2])
+		//Logf(LOG_DEBUG, "SSL version: %d.%d\n", buf[1], buf[2])
 		if buf[1] < 3 {
 			return errors.New(fmt.Sprintf("Incompatible SSL Version (%d.%d)!", buf[1], buf[2]))
 		}
 
 		// Make sure we have the whole handshake
 		len := int((buf[3] << 8) + buf[4] + 5)
-		//fmt.Printf("need: %d, have:%d\n", len, pos)
+		//Logf(LOG_DEBUG, "need: %d, have:%d\n", len, pos)
 		if pos < len {
 			continue
 		}
@@ -252,12 +251,12 @@ func (https *HttpsProxyConnection) ParseTlsHandshake() error {
 }
 
 func (https *HttpsProxyConnection) HandleConn() {
-	fmt.Printf("Handling new connection from %v\n", https.cConn.RemoteAddr())
+	Logf(LOG_NOTICE, "Handling new connection from %v\n", https.cConn.RemoteAddr())
 	var err error
 
 	// Extract desired server from TLS handshake
 	if err = https.ParseTlsHandshake(); err != nil {
-		fmt.Printf("Error getting server: %v\n", err)
+		Logf(LOG_NOTICE, "Error getting server: %v\n", err)
 		https.cConn.Close()
 		return
 	}
@@ -265,35 +264,34 @@ func (https *HttpsProxyConnection) HandleConn() {
 	// TODO(fabi): Figure out what to do if server contains a port number
 
 	// Create connection to server
-	fmt.Printf("Connecting to %s:https\n", https.server)
+	Logf(LOG_INFO, "Connecting to %s:https\n", https.server)
 	https.sConn, err = net.Dial("tcp", fmt.Sprintf("%s:https", https.server))
 	if err != nil {
-		fmt.Printf("Error connecting to server: %v\n", err)
+		Logf(LOG_NOTICE, "Error connecting to server: %v\n", err)
 		https.cConn.Close()
-		https.sConn.Close()
 		return
 	}
 
 	// Send data we read during parsing to server
 	if _, err = https.sConn.Write(https.tlsBuf); err != nil {
-		fmt.Printf("Write error: %v\n", err)
+		Logf(LOG_INFO, "Write error: %v\n", err)
 		https.cConn.Close()
 		https.sConn.Close()
 		return
 	}
 
 	// Link both connections together
-	fmt.Println("Linking client and server connection")
+	Logf(LOG_INFO, "Linking client and server connection")
 	go PipeConn(https.cConn, https.sConn)
 	go PipeConn(https.sConn, https.cConn)
 }
 
 func startHttpProxy() {
 	// Start listener
-	fmt.Println("Listening on :http")
+	Logf(LOG_NOTICE, "Listening on :http")
 	listener, err := net.Listen("tcp", ":http")
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 
 	// Wait for clients
@@ -302,17 +300,17 @@ func startHttpProxy() {
 			newConn := HttpProxyConnection{cConn: conn}
 			go newConn.HandleConn()
 		} else {
-			fmt.Printf("Client error: %v\n", err)
+			Logf(LOG_ERR, "Client error: %v\n", err)
 		}
 	}
 }
 
 func startHttpsProxy() {
 	// Start listener
-	fmt.Println("Listening on :https")
+	Logf(LOG_NOTICE, "Listening on :https")
 	listener, err := net.Listen("tcp", ":https")
 	if err != nil {
-		log.Fatal(err)
+		Fatal(err)
 	}
 
 	// Wait for clients
@@ -321,12 +319,15 @@ func startHttpsProxy() {
 			newConn := HttpsProxyConnection{cConn: conn}
 			go newConn.HandleConn()
 		} else {
-			fmt.Printf("Client error: %v\n", err)
+			Logf(LOG_ERR, "Client error: %v\n", err)
 		}
 	}
 }
 
 func main() {
+	// Parse flags
+	flag.Parse()
+	
 	// Start proxy routines
 	go startHttpProxy()
 	go startHttpsProxy()
